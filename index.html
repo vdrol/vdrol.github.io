@@ -104,7 +104,7 @@
   <section id="gate" class="stack hidden">
     <div class="brand"><svg class="flame" viewBox="0 0 24 24"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffc74d"/><stop offset=".5" stop-color="#ff6b00"/><stop offset="1" stop-color="#ff2e54"/></linearGradient></defs><path fill="url(#g)" d="M12 2c1 3.5 5 6 5 11a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5.2 1.6 1 2.6 2 3 0-3.5-1-6.5 1-9.5z"/></svg>Burnlink</div>
     <h1>Someone sent you a secret</h1>
-    <p class="sub" id="gate-sub">It self-destructs after you open it.</p>
+    <p class="sub" id="gate-sub">Checking…</p>
     <span class="pill" id="gate-mode">One look</span>
     <div class="stack" style="margin-top:12px">
       <button class="btn primary" id="reveal">Reveal the note</button>
@@ -129,6 +129,7 @@
       <div class="note" id="note"></div>
       <div class="burn-front" id="burn-front"></div>
     </div>
+    <p class="sub" id="opens-left" style="font-size:13px;font-weight:600"></p>
     <button class="btn text" id="burn-now"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c1 3.5 5 6 5 11a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5.2 1.6 1 2.6 2 3 0-3.5-1-6.5 1-9.5z"/></svg>Burn it now</button>
   </section>
 
@@ -146,6 +147,10 @@
 // ---- Config -------------------------------------------------------------
 // Replace with the App Store URL once the app is published.
 const APP_STORE_URL = "https://apps.apple.com/";
+// The deployed open counter (worker/). Local copies of this page use a local worker.
+const API = location.hostname === "localhost" || location.hostname === "127.0.0.1"
+  ? "http://127.0.0.1:8787/v1/notes"
+  : "https://burnlink.virajdrolia000.workers.dev/v1/notes";
 
 // ---- Helpers ------------------------------------------------------------
 const $ = (id) => document.getElementById(id);
@@ -153,10 +158,9 @@ const show = (id) => {
   for (const s of ["gate", "ignite", "reading", "ashes"]) $(s).classList.toggle("hidden", s !== id);
   $(id).classList.add("fade-in");
 };
-const WINDOW = { once: 60, tenMinutes: 600 };
-const LABEL = { once: ["One look", "It opens once, then burns after 60 seconds."],
-                tenMinutes: ["10 minutes", "You can reopen it for 10 minutes, then it's gone."] };
-const APPLE_EPOCH = 978307200; // Swift's Date reference (2001-01-01) in Unix seconds
+const bytesToB64url = (b) => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const fmtWindow = (sec) => sec < 120 ? `${sec} seconds` : `${Math.round(sec / 60)} minutes`;
 
 function b64urlToBytes(s) {
   s = s.replace(/-/g, "+").replace(/_/g, "/");
@@ -164,36 +168,32 @@ function b64urlToBytes(s) {
   return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 }
 
-async function decode(fragment) {
+// Link layout (see NoteCodec.swift): [0x02][id:16][key half:32][nonce:12 + ciphertext + tag:16]
+function parseEnvelope(fragment) {
   const blob = b64urlToBytes(fragment);
-  if (blob.length < 32 + 12 + 16) throw new Error("short");
-  const key = await crypto.subtle.importKey("raw", blob.slice(0, 32), "AES-GCM", false, ["decrypt"]);
-  const iv = blob.slice(32, 44);
-  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, blob.slice(44));
+  if (blob[0] !== 2 || blob.length < 1 + 16 + 32 + 28) throw new Error("not a burn link");
+  return { id: bytesToB64url(blob.slice(1, 17)), linkHalf: blob.slice(17, 49), sealed: blob.slice(49) };
+}
+
+async function reveal(env, serverHalf) {
+  const raw = env.linkHalf.map((b, i) => b ^ serverHalf[i]);
+  const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: env.sealed.slice(0, 12) }, key, env.sealed.slice(12));
   return JSON.parse(new TextDecoder().decode(plain));
 }
 
-async function hashId(id) {
-  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id));
-  return "burn:" + [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+// The counter answers 200 with opens left, or 404/410 once every open is used up (or the link expired).
+async function api(path, method = "GET") {
+  let res;
+  try { res = await fetch(API + path, { method, cache: "no-store" }); }
+  catch { return { offline: true }; }
+  const body = await res.json().catch(() => ({}));
+  return { ...body, burned: res.status === 404 || res.status === 410, ok: res.ok };
 }
 
-// Same rules as the app's BurnLedger, kept in this browser's storage.
+// Small per-browser flags (e.g. "this browser has the app"); never used for open counting.
 function ledgerGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
 function ledgerSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
-
-async function access(note) {
-  const k = await hashId(note.id);
-  const windowSec = WINDOW[note.mode] ?? 60;
-  const first = ledgerGet(k);
-  if (first) {
-    if (note.mode !== "tenMinutes") return null;
-    const deadline = Number(first) + windowSec * 1000;
-    return deadline > Date.now() ? deadline : null;
-  }
-  ledgerSet(k, String(Date.now()));
-  return Date.now() + windowSec * 1000;
-}
 
 function ashes(title, sub) {
   $("ash-title").textContent = title;
@@ -258,7 +258,7 @@ async function ignite() {
 function read(note, deadline) {
   show("reading");
   $("note").textContent = note.text;
-  const arc = $("timer-arc"), C = 2 * Math.PI * 58, total = (WINDOW[note.mode] ?? 60) * 1000;
+  const arc = $("timer-arc"), C = 2 * Math.PI * 58, total = note.window * 1000;
   arc.style.strokeDasharray = C;
   return new Promise((done) => {
     let finished = false;
@@ -336,13 +336,20 @@ async function main() {
 
   if (!fragment) return ashes("Nothing here", "This page opens Burnlink notes. Ask the sender for the full link.");
 
-  let note;
-  try { note = await decode(fragment); }
+  let env;
+  try { env = parseEnvelope(fragment); }
   catch { return ashes("Not a burn link", "That link is broken or was cut off. Ask the sender to copy it again."); }
 
-  const [label, sub] = LABEL[note.mode] ?? LABEL.once;
-  $("gate-mode").textContent = label;
-  $("gate-sub").textContent = sub;
+  // Peek at how many opens are left. This doesn't use one up, so link previews and email scanners are harmless.
+  const status = await api(`/${env.id}`);
+  if (status.offline) return ashes("Couldn't connect", "Opening a note needs the internet, to check it still has opens left. Check your connection and reload.");
+  if (status.burned) return ashes("Already burned", "This link has used up all its opens. It's gone for good.");
+  if (!status.ok) return ashes("Something went wrong", "Burnlink couldn't check this link. Try again in a moment.");
+
+  $("gate-mode").textContent = status.total === 1 ? "One look" : `${status.remaining} of ${status.total} opens left`;
+  $("gate-sub").textContent = status.remaining === 1
+    ? "This is the last open. After you reveal it, nobody can open it again."
+    : `It can be opened ${plural(status.remaining, "more time", "more times")}, on any device. Each reveal uses one.`;
   const appLink = "burnlink://n#" + fragment;
   $("open-app").href = appLink;
   $("open-app").onclick = (e) => { e.preventDefault(); openInApp(appLink); };
@@ -351,13 +358,21 @@ async function main() {
   if (ledgerGet(HAS_APP)) { preferApp(); openInApp(appLink); }
 
   $("reveal").onclick = async () => {
-    $("reveal").onclick = null; // a double-tap must not start a second reveal
-    const deadline = await access(note);
-    if (!deadline) return ashes("Already burned", "This note was opened before. It's gone for good.");
+    $("reveal").onclick = null; // a double-tap must not use up a second open
+    const res = await api(`/${env.id}/open`, "POST");
+    if (res.offline) return ashes("Couldn't connect", "Check your connection and tap the link again.");
+    if (res.burned) return ashes("Already burned", "Someone used the last open just before you. It's gone for good.");
+    let note;
+    try { note = await reveal(env, b64urlToBytes(res.share)); }
+    catch { return ashes("Not a burn link", "That link is broken or was cut off. Ask the sender to copy it again."); }
+    $("opens-left").textContent = res.remaining === 0
+      ? "Last open. Gone for good after this."
+      : `${plural(res.remaining, "more open", "more opens")} left on this link`;
     await ignite();
-    await read(note, deadline);
+    await read(note, Date.now() + note.window * 1000);
     await burn();
-    ashes("Turned to ash", "The note is gone. Nothing was stored anywhere.");
+    if (res.remaining === 0) ashes("Turned to ash", "That was the last open. Its key is destroyed, so nobody can open it again.");
+    else ashes("Gone from this screen", `The link can be opened ${plural(res.remaining, "more time", "more times")}, on any device.`);
   };
 }
 
