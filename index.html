@@ -322,6 +322,7 @@ async function main() {
   show("gate");
 
   $("reveal").onclick = async () => {
+    $("reveal").onclick = null; // a double-tap must not start a second reveal
     const deadline = await access(note);
     if (!deadline) return ashes("Already burned", "This note was opened before. It's gone for good.");
     await ignite();
