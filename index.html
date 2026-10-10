@@ -303,6 +303,31 @@ async function burn() {
   embers.origin = 1.05;
 }
 
+// Without Universal Links (paid Apple account) a page can't ask iOS whether an app is
+// installed. Instead: if the page gets backgrounded right after we hand the link to the
+// app, the app opened it, so remember that and skip the web view next time.
+const HAS_APP = "burnlink:has-app";
+function openInApp(link) {
+  // iOS asks "Open in Burnlink?" first, so allow time for the reader to confirm.
+  const onHide = () => { if (document.hidden) ledgerSet(HAS_APP, "1"); };
+  document.addEventListener("visibilitychange", onHide);
+  addEventListener("pagehide", onHide);
+  setTimeout(() => {
+    document.removeEventListener("visibilitychange", onHide);
+    removeEventListener("pagehide", onHide);
+  }, 30000);
+  location.href = link;
+}
+
+// Reader is known to have the app: make "Open in app" the main, first button.
+function preferApp() {
+  const app = $("open-app"), reveal = $("reveal");
+  app.classList.replace("ghost", "primary");
+  reveal.classList.replace("primary", "ghost");
+  reveal.textContent = "Reveal it here instead";
+  app.parentNode.insertBefore(app, reveal);
+}
+
 async function main() {
   $("get-app").href = APP_STORE_URL;
   const fragment = location.hash.slice(1);
@@ -318,8 +343,12 @@ async function main() {
   const [label, sub] = LABEL[note.mode] ?? LABEL.once;
   $("gate-mode").textContent = label;
   $("gate-sub").textContent = sub;
-  $("open-app").href = "burnlink://n#" + fragment;
+  const appLink = "burnlink://n#" + fragment;
+  $("open-app").href = appLink;
+  $("open-app").onclick = (e) => { e.preventDefault(); openInApp(appLink); };
   show("gate");
+  // This browser has handed a note to the app before, so the app is installed: go straight there.
+  if (ledgerGet(HAS_APP)) { preferApp(); openInApp(appLink); }
 
   $("reveal").onclick = async () => {
     $("reveal").onclick = null; // a double-tap must not start a second reveal
