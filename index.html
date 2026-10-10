@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer">
+<title>Burnlink</title>
+<meta name="description" content="Someone sent you a note that self-destructs.">
+<meta property="og:title" content="🔥 A note that self-destructs">
+<meta property="og:description" content="Open it once. Then it burns.">
+<style>
+  :root {
+    --bg: #000; --card: #171717; --ink: #fff; --ash: #8c8c8c;
+    --gold: #ffc74d; --ember: #ff6b00; --flare: #ff2e54;
+    --fire: linear-gradient(135deg, var(--gold), var(--ember), var(--flare));
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 17px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; overflow: hidden;
+  }
+  #embers { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  main {
+    position: relative; min-height: 100%; max-width: 520px; margin: 0 auto;
+    padding: max(24px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 24px;
+    text-align: center;
+  }
+  .hidden { display: none !important; }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 20px; }
+  .flame { width: 26px; height: 26px; }
+  h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; }
+  p.sub { color: var(--ash); max-width: 340px; }
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; max-width: 360px; padding: 16px 20px; border-radius: 999px; border: 0;
+    font-family: inherit; font-size: 17px; font-weight: 600; line-height: 1.2; cursor: pointer; text-decoration: none;
+  }
+  .ico { width: 18px; height: 18px; flex: none; }
+  .btn.primary { background: var(--fire); color: #000; }
+  .btn.ghost { background: var(--card); color: var(--ink); border: 1px solid rgba(255,255,255,.08); }
+  .btn.text { background: none; color: var(--ember); width: auto; padding: 8px; }
+  .pill {
+    font-size: 13px; font-weight: 600; color: var(--ember);
+    background: rgba(255,107,0,.16); padding: 4px 12px; border-radius: 999px;
+  }
+  .stack { display: flex; flex-direction: column; align-items: center; gap: 12px; width: 100%; }
+
+  /* Ignition */
+  .ignite { position: relative; width: 220px; height: 220px; display: grid; place-items: center; }
+  .ignite::before {
+    content: ""; position: absolute; inset: -60px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,107,0,.45), transparent 65%);
+    animation: throb 1s ease-out infinite; filter: blur(16px);
+  }
+  @keyframes throb { from { transform: scale(1.1); } to { transform: scale(.8); } }
+  .ring { position: absolute; inset: 0; transform: rotate(-90deg); }
+  .ring circle { fill: none; stroke-width: 6; stroke-linecap: round; }
+  .ring .track { stroke: rgba(255,255,255,.08); }
+  #ignite-num {
+    font: 900 110px/1 ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+    background: var(--fire); -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  #ignite-num.tick { animation: pop .9s ease-out; }
+  @keyframes pop { 0% { transform: scale(1.5); opacity: 0; } 25% { transform: scale(1); opacity: 1; } 85% { opacity: 1; } 100% { opacity: 0; } }
+
+  /* Reading */
+  .timer { position: relative; width: 128px; height: 128px; display: grid; place-items: center; }
+  .timer .ring circle { stroke-width: 8; }
+  #timer-arc { filter: drop-shadow(0 0 6px currentColor); transition: stroke .3s; }
+  #timer-text { font: 700 30px/1 ui-rounded, system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  .timer small { display: block; color: var(--ash); font-size: 11px; margin-top: 4px; }
+  .note-wrap { position: relative; width: 100%; }
+  .note {
+    width: 100%; max-height: 50vh; overflow: auto; text-align: left;
+    background: var(--card); border: 1px solid rgba(255,107,0,.25); border-radius: 24px;
+    padding: 22px; font-size: 20px; font-weight: 500; white-space: pre-wrap; word-break: break-word;
+    -webkit-user-select: text; user-select: text;
+  }
+  .note.shake { animation: shake .08s linear infinite; }
+  @keyframes shake { 0%,100% { transform: translateX(-2px); } 50% { transform: translateX(2px); } }
+  .burn-front {
+    position: absolute; left: 0; right: 0; height: 12px; border-radius: 999px; pointer-events: none;
+    background: linear-gradient(90deg, transparent, var(--gold), var(--ember), var(--flare), transparent);
+    filter: blur(6px); mix-blend-mode: plus-lighter; opacity: 0;
+  }
+  body.away .note { filter: blur(18px); }
+
+  /* Ashes */
+  .ash-icon { width: 72px; height: 72px; color: var(--ash); animation: breathe 2s ease-in-out infinite; }
+  @keyframes breathe { 50% { opacity: .45; } }
+  .fade-in { animation: fadeIn .5s ease both; }
+  @keyframes fadeIn { from { opacity: 0; transform: scale(.97); } }
+</style>
+</head>
+<body>
+<canvas id="embers"></canvas>
+<main>
+  <!-- Gate: nothing is decrypted or burned until the reader taps. Email link scanners never tap. -->
+  <section id="gate" class="stack hidden">
+    <div class="brand"><svg class="flame" viewBox="0 0 24 24"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffc74d"/><stop offset=".5" stop-color="#ff6b00"/><stop offset="1" stop-color="#ff2e54"/></linearGradient></defs><path fill="url(#g)" d="M12 2c1 3.5 5 6 5 11a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5.2 1.6 1 2.6 2 3 0-3.5-1-6.5 1-9.5z"/></svg>Burnlink</div>
+    <h1>Someone sent you a secret</h1>
+    <p class="sub" id="gate-sub">It self-destructs after you open it.</p>
+    <span class="pill" id="gate-mode">One look</span>
+    <div class="stack" style="margin-top:12px">
+      <button class="btn primary" id="reveal">Reveal the note</button>
+      <a class="btn ghost" id="open-app" href="#">Open in the Burnlink app</a>
+    </div>
+  </section>
+
+  <section id="ignite" class="hidden">
+    <div class="ignite">
+      <svg class="ring" viewBox="0 0 220 220"><circle class="track" cx="110" cy="110" r="100"/><circle id="ignite-arc" cx="110" cy="110" r="100" stroke="url(#g2)"/><defs><linearGradient id="g2"><stop offset="0" stop-color="#ffc74d"/><stop offset=".5" stop-color="#ff6b00"/><stop offset="1" stop-color="#ff2e54"/></linearGradient></defs></svg>
+      <span id="ignite-num">3</span>
+    </div>
+    <p class="sub" style="margin-top:40px">This note self-destructs</p>
+  </section>
+
+  <section id="reading" class="stack hidden">
+    <div class="timer" id="timer">
+      <svg class="ring" viewBox="0 0 128 128"><circle class="track" cx="64" cy="64" r="58"/><circle id="timer-arc" cx="64" cy="64" r="58"/></svg>
+      <div><span id="timer-text">1:00</span><small>until it burns</small></div>
+    </div>
+    <div class="note-wrap" id="note-wrap">
+      <div class="note" id="note"></div>
+      <div class="burn-front" id="burn-front"></div>
+    </div>
+    <button class="btn text" id="burn-now"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c1 3.5 5 6 5 11a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5.2 1.6 1 2.6 2 3 0-3.5-1-6.5 1-9.5z"/></svg>Burn it now</button>
+  </section>
+
+  <section id="ashes" class="stack hidden">
+    <svg class="ash-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M7 18a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 9.5a4.25 4.25 0 0 1 .25 8.5z"/></svg>
+    <h1 id="ash-title">Turned to ash</h1>
+    <p class="sub" id="ash-sub">The note is gone. Nothing was stored anywhere.</p>
+    <div class="stack" style="margin-top:24px">
+      <a class="btn primary" id="get-app" href="#"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2c1 3.5 5 6 5 11a5 5 0 0 1-10 0c0-2 1-3.5 2-4.5.2 1.6 1 2.6 2 3 0-3.5-1-6.5 1-9.5z"/></svg>Send your own burn link</a>
+    </div>
+  </section>
+</main>
+
+<script>
+// ---- Config -------------------------------------------------------------
+// Replace with the App Store URL once the app is published.
+const APP_STORE_URL = "https://apps.apple.com/";
+
+// ---- Helpers ------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+const show = (id) => {
+  for (const s of ["gate", "ignite", "reading", "ashes"]) $(s).classList.toggle("hidden", s !== id);
+  $(id).classList.add("fade-in");
+};
+const WINDOW = { once: 60, tenMinutes: 600 };
+const LABEL = { once: ["One look", "It opens once, then burns after 60 seconds."],
+                tenMinutes: ["10 minutes", "You can reopen it for 10 minutes, then it's gone."] };
+const APPLE_EPOCH = 978307200; // Swift's Date reference (2001-01-01) in Unix seconds
+
+function b64urlToBytes(s) {
+  s = s.replace(/-/g, "+").replace(/_/g, "/");
+  s += "=".repeat((4 - (s.length % 4)) % 4);
+  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+}
+
+async function decode(fragment) {
+  const blob = b64urlToBytes(fragment);
+  if (blob.length < 32 + 12 + 16) throw new Error("short");
+  const key = await crypto.subtle.importKey("raw", blob.slice(0, 32), "AES-GCM", false, ["decrypt"]);
+  const iv = blob.slice(32, 44);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, blob.slice(44));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
+async function hashId(id) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id));
+  return "burn:" + [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Same rules as the app's BurnLedger, kept in this browser's storage.
+function ledgerGet(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function ledgerSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+
+async function access(note) {
+  const k = await hashId(note.id);
+  const windowSec = WINDOW[note.mode] ?? 60;
+  const first = ledgerGet(k);
+  if (first) {
+    if (note.mode !== "tenMinutes") return null;
+    const deadline = Number(first) + windowSec * 1000;
+    return deadline > Date.now() ? deadline : null;
+  }
+  ledgerSet(k, String(Date.now()));
+  return Date.now() + windowSec * 1000;
+}
+
+function ashes(title, sub) {
+  $("ash-title").textContent = title;
+  $("ash-sub").textContent = sub;
+  show("ashes");
+  embers.intensity = 0.1;
+}
+
+// ---- Embers -------------------------------------------------------------
+const embers = { intensity: 0.15, origin: 1.05 };
+(function emberLoop() {
+  const c = $("embers"), ctx = c.getContext("2d");
+  const fract = (x) => x - Math.floor(x);
+  const heat = (f) => f > 0.5 ? [255, 107 + (199 - 107) * (f - 0.5) * 2, 77 * (f - 0.5) * 2]
+                              : [255, 46 + (107 - 46) * f * 2, 84 * (1 - f * 2)];
+  function frame(ms) {
+    const dpr = devicePixelRatio || 1, w = innerWidth, h = innerHeight;
+    if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const t = ms / 1000, n = Math.floor(14 + 70 * embers.intensity);
+    for (let i = 0; i < n; i++) {
+      const seed = i * 12.9898;
+      const r1 = fract(Math.sin(seed) * 43758.5453), r2 = fract(Math.sin(seed * 1.7) * 24634.6345), r3 = fract(Math.sin(seed * 2.3) * 13579.2468);
+      const life = fract(t * (0.06 + 0.14 * r2) + r3);
+      const x = w * (r1 + 0.04 * Math.sin(t * (0.8 + r2) + seed));
+      const y = h * (embers.origin - life * (0.55 + 0.6 * r3));
+      const rad = (1 + 2.4 * r2) * (1 - life);
+      const [r, g, b] = heat(1 - life);
+      ctx.fillStyle = `rgba(${r|0},${g|0},${b|0},${(1 - life) * (0.35 + 0.65 * embers.intensity)})`;
+      ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI * 2); ctx.fill();
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+
+// ---- Flow ---------------------------------------------------------------
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function ignite() {
+  show("ignite");
+  const arc = $("ignite-arc"), C = 2 * Math.PI * 100, num = $("ignite-num");
+  arc.style.strokeDasharray = C;
+  const start = performance.now();
+  let last = 0;
+  await new Promise((done) => {
+    (function step(now) {
+      const el = Math.min(3, (now - start) / 1000);
+      arc.style.strokeDashoffset = C * (1 - el / 3);
+      const n = Math.max(1, 3 - Math.floor(el));
+      if (n !== last) {
+        last = n; num.textContent = n;
+        num.classList.remove("tick"); void num.offsetWidth; num.classList.add("tick");
+        navigator.vibrate?.(30);
+      }
+      el < 3 ? requestAnimationFrame(step) : done();
+    })(start);
+  });
+}
+
+function read(note, deadline) {
+  show("reading");
+  $("note").textContent = note.text;
+  const arc = $("timer-arc"), C = 2 * Math.PI * 58, total = (WINDOW[note.mode] ?? 60) * 1000;
+  arc.style.strokeDasharray = C;
+  return new Promise((done) => {
+    let finished = false;
+    const finish = () => { if (!finished) { finished = true; done(); } };
+    $("burn-now").onclick = finish;
+    (function tick() {
+      if (finished) return;
+      const left = Math.max(0, deadline - Date.now()), f = left / total;
+      arc.style.strokeDashoffset = C * (1 - f);
+      const col = f > 0.5 ? "#ffa733" : f > 0.2 ? "#ff6b00" : "#ff2e54";
+      arc.style.stroke = col; arc.style.color = col;
+      const s = Math.ceil(left / 1000);
+      $("timer-text").textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+      $("note").classList.toggle("shake", left < 6000);
+      embers.intensity = 0.2 + 0.6 * (1 - f);
+      left > 0 ? requestAnimationFrame(tick) : finish();
+    })();
+  });
+}
+
+async function burn() {
+  const note = $("note"), front = $("burn-front"), wrap = $("note-wrap");
+  note.classList.remove("shake");
+  $("burn-now").style.visibility = "hidden";
+  $("timer").style.transition = "opacity .6s"; $("timer").style.opacity = 0;
+  navigator.vibrate?.([40, 60, 40]);
+  const dur = 2400, start = performance.now();
+  await new Promise((done) => {
+    (function step(now) {
+      const p = Math.min(1, (now - start) / dur), line = (1 - p) * 100;
+      const mask = `linear-gradient(to bottom, #000 0%, #000 ${Math.max(0, line - 6)}%, transparent ${Math.max(0.01, line)}%)`;
+      wrap.style.webkitMaskImage = mask; wrap.style.maskImage = mask;
+      note.style.filter = `blur(${p * 4}px)`;
+      wrap.style.transform = `scale(${1 - 0.04 * p})`;
+      front.style.opacity = p > 0 && p < 1 ? 1 : 0;
+      front.style.top = `${wrap.offsetHeight * (1 - p) - 12}px`;
+      embers.intensity = 1; embers.origin = 0.15 + 0.85 * (1 - p);
+      p < 1 ? requestAnimationFrame(step) : done();
+    })(start);
+  });
+  $("note").textContent = ""; // drop the plaintext from the page
+  embers.origin = 1.05;
+}
+
+async function main() {
+  $("get-app").href = APP_STORE_URL;
+  const fragment = location.hash.slice(1);
+  // Remove the secret from the address bar and history straight away.
+  history.replaceState(null, "", location.pathname + location.search);
+
+  if (!fragment) return ashes("Nothing here", "This page opens Burnlink notes. Ask the sender for the full link.");
+
+  let note;
+  try { note = await decode(fragment); }
+  catch { return ashes("Not a burn link", "That link is broken or was cut off. Ask the sender to copy it again."); }
+
+  const [label, sub] = LABEL[note.mode] ?? LABEL.once;
+  $("gate-mode").textContent = label;
+  $("gate-sub").textContent = sub;
+  $("open-app").href = "burnlink://n#" + fragment;
+  show("gate");
+
+  $("reveal").onclick = async () => {
+    const deadline = await access(note);
+    if (!deadline) return ashes("Already burned", "This note was opened before. It's gone for good.");
+    await ignite();
+    await read(note, deadline);
+    await burn();
+    ashes("Turned to ash", "The note is gone. Nothing was stored anywhere.");
+  };
+}
+
+// A new link tapped while this tab is already open only changes the hash; start over.
+addEventListener("hashchange", () => location.reload());
+document.addEventListener("visibilitychange", () => document.body.classList.toggle("away", document.hidden));
+main();
+</script>
+</body>
+</html>
