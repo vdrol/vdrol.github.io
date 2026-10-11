@@ -44,6 +44,14 @@
   .btn.primary { background: var(--fire); color: #000; }
   .btn.ghost { background: var(--card); color: var(--ink); border: 1px solid rgba(255,255,255,.08); }
   .btn.text { background: none; color: var(--ember); width: auto; padding: 8px; }
+  .pw {
+    width: 100%; max-width: 360px; padding: 15px 18px; border-radius: 16px;
+    background: var(--card); color: var(--ink); border: 1px solid rgba(255,255,255,.12);
+    font: inherit; font-size: 17px; outline: none; text-align: center;
+  }
+  .pw:focus { border-color: rgba(255,107,0,.7); }
+  .pw.bad { border-color: var(--flare); animation: shake .08s linear 5; }
+  .pw-msg { color: var(--flare); font-size: 14px; font-weight: 600; min-height: 1em; }
   .pill {
     font-size: 13px; font-weight: 600; color: var(--ember);
     background: rgba(255,107,0,.16); padding: 4px 12px; border-radius: 999px;
@@ -107,6 +115,10 @@
     <p class="sub" id="gate-sub">Checking…</p>
     <span class="pill" id="gate-mode">One look</span>
     <div class="stack" style="margin-top:12px">
+      <div id="pw-box" class="stack hidden">
+        <input id="pw" class="pw" type="password" placeholder="Password" autocomplete="current-password" enterkeyhint="go">
+        <p class="pw-msg" id="pw-msg"></p>
+      </div>
       <button class="btn primary" id="reveal">Reveal the note</button>
       <a class="btn ghost" id="open-app" href="#">Open in the Burnlink app</a>
     </div>
@@ -168,27 +180,45 @@ function b64urlToBytes(s) {
   return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 }
 
-// Link layout (see NoteCodec.swift): [0x02][id:16][key half:32][nonce:12 + ciphertext + tag:16]
+// Link layout (see NoteCodec.swift):
+//   [0x02][id:16][key half:32][nonce:12 + ciphertext + tag:16]
+//   [0x03][id:16][key half:32][password salt:16][nonce + ciphertext + tag]   (password protected)
 function parseEnvelope(fragment) {
   const blob = b64urlToBytes(fragment);
-  if (blob[0] !== 2 || blob.length < 1 + 16 + 32 + 28) throw new Error("not a burn link");
-  return { id: bytesToB64url(blob.slice(1, 17)), linkHalf: blob.slice(17, 49), sealed: blob.slice(49) };
+  const saltLen = blob[0] === 3 ? 16 : blob[0] === 2 ? 0 : -1;
+  if (saltLen < 0 || blob.length < 1 + 16 + 32 + saltLen + 28) throw new Error("not a burn link");
+  return {
+    id: bytesToB64url(blob.slice(1, 17)),
+    linkHalf: blob.slice(17, 49),
+    salt: saltLen ? blob.slice(49, 65) : null,
+    sealed: blob.slice(49 + saltLen),
+  };
 }
 
-async function reveal(env, serverHalf) {
-  const raw = env.linkHalf.map((b, i) => b ^ serverHalf[i]);
+// Same as PasswordKeys in the app: PBKDF2-SHA256, 600k rounds, 64 bytes.
+// First half is mixed into the note key, second half is the proof the counter checks.
+async function passwordKeys(password, salt) {
+  const base = await crypto.subtle.importKey("raw", new TextEncoder().encode(password.normalize("NFC")), "PBKDF2", false, ["deriveBits"]);
+  const bits = new Uint8Array(await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations: 600000 }, base, 512));
+  return { keyPart: bits.slice(0, 32), proof: bits.slice(32) };
+}
+
+async function reveal(env, serverHalf, keys) {
+  const raw = env.linkHalf.map((b, i) => b ^ serverHalf[i] ^ (keys ? keys.keyPart[i] : 0));
   const key = await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: env.sealed.slice(0, 12) }, key, env.sealed.slice(12));
   return JSON.parse(new TextDecoder().decode(plain));
 }
 
 // The counter answers 200 with opens left, or 404/410 once every open is used up (or the link expired).
-async function api(path, method = "GET") {
+async function api(path, method = "GET", payload) {
   let res;
-  try { res = await fetch(API + path, { method, cache: "no-store" }); }
+  const init = { method, cache: "no-store" };
+  if (payload) { init.body = JSON.stringify(payload); init.headers = { "Content-Type": "application/json" }; }
+  try { res = await fetch(API + path, init); }
   catch { return { offline: true }; }
   const body = await res.json().catch(() => ({}));
-  return { ...body, burned: res.status === 404 || res.status === 410, ok: res.ok };
+  return { ...body, burned: res.status === 404 || res.status === 410, wrongPassword: res.status === 403, ok: res.ok };
 }
 
 // Small per-browser flags (e.g. "this browser has the app"); never used for open counting.
@@ -343,13 +373,17 @@ async function main() {
   // Peek at how many opens are left. This doesn't use one up, so link previews and email scanners are harmless.
   const status = await api(`/${env.id}`);
   if (status.offline) return ashes("Couldn't connect", "Opening a note needs the internet, to check it still has opens left. Check your connection and reload.");
-  if (status.burned) return ashes("Already burned", "This link has used up all its opens. It's gone for good.");
+  if (status.burned) return ashes("Already burned", "This link is used up, or had too many wrong passwords. It's gone for good.");
   if (!status.ok) return ashes("Something went wrong", "Burnlink couldn't check this link. Try again in a moment.");
 
   $("gate-mode").textContent = status.total === 1 ? "One look" : `${status.remaining} of ${status.total} opens left`;
   $("gate-sub").textContent = status.remaining === 1
     ? "This is the last open. After you reveal it, nobody can open it again."
     : `It can be opened ${plural(status.remaining, "more time", "more times")}, on any device. Each reveal uses one.`;
+  if (env.salt) {
+    $("pw-box").classList.remove("hidden");
+    $("gate-sub").textContent += " It's password protected. A wrong password doesn't use an open, but 5 wrong tries burn it.";
+  }
   const appLink = "burnlink://n#" + fragment;
   $("open-app").href = appLink;
   $("open-app").onclick = (e) => { e.preventDefault(); openInApp(appLink); };
@@ -357,13 +391,36 @@ async function main() {
   // This browser has handed a note to the app before, so the app is installed: go straight there.
   if (ledgerGet(HAS_APP)) { preferApp(); openInApp(appLink); }
 
-  $("reveal").onclick = async () => {
-    $("reveal").onclick = null; // a double-tap must not use up a second open
-    const res = await api(`/${env.id}/open`, "POST");
+  let busy = false;
+  const attempt = async () => {
+    if (busy) return; // a double-tap must not use up a second open
+    let keys = null;
+    if (env.salt) {
+      const pw = $("pw").value;
+      if (!pw) { $("pw").focus(); return; }
+      busy = true;
+      $("reveal").textContent = "Checking…";
+      keys = await passwordKeys(pw, env.salt);
+    }
+    busy = true;
+    const res = await api(`/${env.id}/open`, "POST", keys ? { auth: bytesToB64url(keys.proof) } : undefined);
+    if (res.wrongPassword) {
+      busy = false;
+      $("reveal").textContent = "Reveal the note";
+      $("pw").value = "";
+      $("pw").classList.remove("bad"); void $("pw").offsetWidth; $("pw").classList.add("bad");
+      $("pw-msg").textContent = `Wrong password. ${plural(res.attemptsLeft, "more try", "more tries")} before it burns for good.`;
+      $("pw").focus();
+      navigator.vibrate?.([30, 40, 30]);
+      return;
+    }
+    $("reveal").onclick = null;
     if (res.offline) return ashes("Couldn't connect", "Check your connection and tap the link again.");
-    if (res.burned) return ashes("Already burned", "Someone used the last open just before you. It's gone for good.");
+    if (res.burned) return ashes("Already burned", env.salt
+      ? "Too many wrong passwords, or someone used the last open just before you. It's gone for good."
+      : "Someone used the last open just before you. It's gone for good.");
     let note;
-    try { note = await reveal(env, b64urlToBytes(res.share)); }
+    try { note = await reveal(env, b64urlToBytes(res.share), keys); }
     catch { return ashes("Not a burn link", "That link is broken or was cut off. Ask the sender to copy it again."); }
     $("opens-left").textContent = res.remaining === 0
       ? "Last open. Gone for good after this."
@@ -374,6 +431,8 @@ async function main() {
     if (res.remaining === 0) ashes("Turned to ash", "That was the last open. Its key is destroyed, so nobody can open it again.");
     else ashes("Gone from this screen", `The link can be opened ${plural(res.remaining, "more time", "more times")}, on any device.`);
   };
+  $("reveal").onclick = attempt;
+  $("pw").onkeydown = (e) => { if (e.key === "Enter") attempt(); };
 }
 
 // A new link tapped while this tab is already open only changes the hash; start over.
